@@ -50,7 +50,11 @@ export type TaskStatus = "todo" | "inprogress" | "inreview" | "done" | "cancelle
 
 export type Task = { id: string, project_id: string, title: string, description: string | null, status: TaskStatus, parent_task_attempt: string | null, shared_task_id: string | null, created_at: string, updated_at: string, };
 
-export type TaskWithAttemptStatus = { has_in_progress_attempt: boolean, has_merged_attempt: boolean, last_attempt_failed: boolean, executor: string, id: string, project_id: string, title: string, description: string | null, status: TaskStatus, parent_task_attempt: string | null, shared_task_id: string | null, created_at: string, updated_at: string, };
+export type TaskWithAttemptStatus = { has_in_progress_attempt: boolean, has_merged_attempt: boolean, last_attempt_failed: boolean, executor: string, 
+/**
+ * Review status: "none" | "running" | "completed" | "failed"
+ */
+review_status: string, id: string, project_id: string, title: string, description: string | null, status: TaskStatus, parent_task_attempt: string | null, shared_task_id: string | null, created_at: string, updated_at: string, };
 
 export type TaskRelationships = { parent_task: Task | null, current_attempt: TaskAttempt, children: Array<Task>, };
 
@@ -178,7 +182,7 @@ export type CreateGitHubPrRequest = { title: string, body: string | null, target
 
 export type ImageResponse = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, created_at: string, updated_at: string, };
 
-export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, };
+export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, review: ReviewConfig, };
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
@@ -197,6 +201,28 @@ export enum SoundFile { ABSTRACT_SOUND1 = "ABSTRACT_SOUND1", ABSTRACT_SOUND2 = "
 export type UiLanguage = "BROWSER" | "EN" | "JA" | "ES" | "KO";
 
 export type ShowcaseState = { seen_features: Array<string>, };
+
+export type ReviewConfig = { 
+/**
+ * Whether auto-review is enabled when tasks move to InReview
+ */
+auto_review_enabled: boolean, 
+/**
+ * Executor profile to use for review agent (None = use same as coding agent)
+ */
+review_profile: ExecutorProfileId | null, 
+/**
+ * Custom prompt template for review agent
+ */
+prompt_template: string | null, 
+/**
+ * Maximum number of automatic retry attempts
+ */
+max_retries: number, 
+/**
+ * Whether to include review feedback in follow-up prompts by default
+ */
+include_in_follow_up: boolean, };
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 
@@ -338,11 +364,15 @@ after_head_commit: string | null, status: ExecutionProcessStatus, exit_code: big
  * history view (due to restore/trimming). Hidden from logs/timeline;
  * still listed in the Processes tab.
  */
-dropped: boolean, started_at: string, completed_at: string | null, created_at: string, updated_at: string, };
+dropped: boolean, 
+/**
+ * Summary/feedback from review agent execution (only populated for review run_reason)
+ */
+review_summary: string | null, started_at: string, completed_at: string | null, created_at: string, updated_at: string, };
 
 export enum ExecutionProcessStatus { running = "running", completed = "completed", failed = "failed", killed = "killed" }
 
-export type ExecutionProcessRunReason = "setupscript" | "cleanupscript" | "codingagent" | "devserver";
+export type ExecutionProcessRunReason = "setupscript" | "cleanupscript" | "codingagent" | "devserver" | "review";
 
 export type Merge = { "type": "direct" } & DirectMerge | { "type": "pr" } & PrMerge;
 

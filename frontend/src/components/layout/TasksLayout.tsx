@@ -48,7 +48,7 @@ function saveSizes(key: string, sizes: SplitSizes): void {
 }
 
 /**
- * AuxRouter - Handles nested AnimatePresence for preview/diffs transitions.
+ * AuxRouter - Handles nested AnimatePresence for preview/diffs/review transitions.
  */
 function AuxRouter({ mode, aux }: { mode: LayoutMode; aux: ReactNode }) {
   return (
@@ -154,7 +154,7 @@ function RightWorkArea({
               collapsible={false}
               className="min-w-0 min-h-0 overflow-hidden"
               role="region"
-              aria-label={mode === 'preview' ? 'Preview' : 'Diffs'}
+              aria-label={mode === 'preview' ? 'Preview' : mode === 'diffs' ? 'Diffs' : 'Review'}
             >
               <AuxRouter mode={mode} aux={aux} />
             </Panel>

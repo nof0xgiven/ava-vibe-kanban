@@ -44,6 +44,8 @@ pub struct TaskWithAttemptStatus {
     pub has_merged_attempt: bool,
     pub last_attempt_failed: bool,
     pub executor: String,
+    /// Review status: "none" | "running" | "completed" | "failed"
+    pub review_status: String,
 }
 
 impl std::ops::Deref for TaskWithAttemptStatus {
@@ -188,7 +190,26 @@ impl Task {
       WHERE ta.task_id = t.id
      ORDER BY ta.created_at DESC
       LIMIT 1
-    )                               AS "executor!: String"
+    )                               AS "executor!: String",
+
+  COALESCE(
+    ( SELECT
+        CASE ep.status
+          WHEN 'running' THEN 'running'
+          WHEN 'completed' THEN 'completed'
+          WHEN 'failed' THEN 'failed'
+          WHEN 'killed' THEN 'failed'
+          ELSE 'none'
+        END
+      FROM task_attempts ta
+      JOIN execution_processes ep
+        ON ep.task_attempt_id = ta.id
+     WHERE ta.task_id   = t.id
+       AND ep.run_reason = 'review'
+     ORDER BY ep.created_at DESC
+     LIMIT 1
+    ), 'none'
+  )                                 AS "review_status!: String"
 
 FROM tasks t
 WHERE t.project_id = $1
@@ -216,6 +237,7 @@ ORDER BY t.created_at DESC"#,
                 has_merged_attempt: false, // TODO use merges table
                 last_attempt_failed: rec.last_attempt_failed != 0,
                 executor: rec.executor,
+                review_status: rec.review_status,
             })
             .collect();
 

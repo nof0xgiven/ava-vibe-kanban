@@ -49,7 +49,8 @@ export const ExecutionProcessesProvider: React.FC<{
         (process) =>
           (process.run_reason === 'codingagent' ||
             process.run_reason === 'setupscript' ||
-            process.run_reason === 'cleanupscript') &&
+            process.run_reason === 'cleanupscript' ||
+            process.run_reason === 'review') &&
           process.status === 'running'
       ),
     [visible]

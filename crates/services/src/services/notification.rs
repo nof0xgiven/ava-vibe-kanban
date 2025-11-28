@@ -65,6 +65,7 @@ impl NotificationService {
                 return;
             }
         };
+        let file_path = file_path.as_path();
 
         // Use platform-specific sound notification
         // Note: spawn() calls are intentionally not awaited - sound notifications should be fire-and-forget
