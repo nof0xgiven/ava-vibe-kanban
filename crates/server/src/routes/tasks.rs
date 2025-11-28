@@ -211,6 +211,7 @@ pub async fn create_task_and_start(
         has_merged_attempt: false,
         last_attempt_failed: false,
         executor: task_attempt.executor,
+        review_status: "none".to_string(),
     })))
 }
 
