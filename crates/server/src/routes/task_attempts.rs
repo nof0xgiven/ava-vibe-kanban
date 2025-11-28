@@ -36,7 +36,7 @@ use executors::{
 use git2::BranchType;
 use serde::{Deserialize, Serialize};
 use services::services::{
-    container::ContainerService,
+    container::{ContainerService, build_review_prompt},
     git::{ConflictOp, GitCliError, GitServiceError, WorktreeResetOptions},
     github::{CreatePrRequest, GitHubService, GitHubServiceError},
 };
@@ -1568,12 +1568,143 @@ pub async fn gh_cli_setup_handler(
     }
 }
 
+/// Start a review for a task attempt
+pub async fn start_review(
+    Extension(task_attempt): Extension<TaskAttempt>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
+    use db::models::execution_process::ExecutionProcessRunReason;
+
+    // Get the task to check status
+    let task = task_attempt
+        .parent_task(&deployment.db().pool)
+        .await?
+        .ok_or(SqlxError::RowNotFound)?;
+
+    // Get config for review settings
+    let config = deployment.config().read().await;
+    let review_config = &config.review;
+
+    // Determine which executor profile to use for review
+    let review_profile_id = if let Some(ref profile) = review_config.review_profile {
+        profile.clone()
+    } else {
+        // Use the same profile as the last coding agent execution
+        ExecutionProcess::latest_executor_profile_for_attempt(
+            &deployment.db().pool,
+            task_attempt.id,
+        )
+        .await?
+    };
+
+    // Get the session ID from the previous coding agent execution
+    let session_id = ExecutionProcess::find_latest_session_id_by_task_attempt(
+        &deployment.db().pool,
+        task_attempt.id,
+    )
+    .await?
+    .ok_or_else(|| ApiError::BadRequest("No previous coding agent session found for review".to_string()))?;
+
+    // Build the review prompt
+    let prompt = build_review_prompt(&task, review_config.prompt_template.as_deref());
+
+    // Create the executor action for review
+    let executor_action = ExecutorAction {
+        typ: ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+            prompt,
+            session_id,
+            executor_profile_id: review_profile_id.clone(),
+        }),
+        next_action: None,
+    };
+
+    // Start the review execution
+    let execution_process = deployment
+        .container()
+        .start_execution(
+            &task_attempt,
+            &executor_action,
+            &ExecutionProcessRunReason::Review,
+        )
+        .await?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "review_started",
+            serde_json::json!({
+                "task_id": task.id.to_string(),
+                "attempt_id": task_attempt.id.to_string(),
+                "executor": review_profile_id.executor.to_string(),
+            }),
+        )
+        .await;
+
+    Ok(ResponseJson(ApiResponse::success(execution_process)))
+}
+
+/// Stop a running review for a task attempt
+pub async fn stop_review(
+    Extension(task_attempt): Extension<TaskAttempt>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus};
+
+    // Find the running review process for this attempt
+    let processes = ExecutionProcess::find_by_task_attempt_id(&deployment.db().pool, task_attempt.id, false).await?;
+    let review_process = processes
+        .into_iter()
+        .find(|p| p.run_reason == ExecutionProcessRunReason::Review && p.status == ExecutionProcessStatus::Running);
+
+    if let Some(process) = review_process {
+        deployment
+            .container()
+            .stop_execution(&process, ExecutionProcessStatus::Killed)
+            .await?;
+    }
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Retry a failed review for a task attempt
+pub async fn retry_review(
+    Extension(task_attempt): Extension<TaskAttempt>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
+    use db::models::execution_process::ExecutionProcessRunReason;
+
+    // Get review config to check max retries
+    let config = deployment.config().read().await;
+    let max_retries = config.review.max_retries;
+    drop(config);
+
+    // Count existing review processes for this attempt
+    let processes = ExecutionProcess::find_by_task_attempt_id(&deployment.db().pool, task_attempt.id, false).await?;
+    let review_count = processes
+        .iter()
+        .filter(|p| p.run_reason == ExecutionProcessRunReason::Review)
+        .count();
+
+    // Check if we've exceeded max retries (first attempt + retries)
+    if review_count > max_retries as usize {
+        return Err(ApiError::BadRequest(format!(
+            "Maximum retry limit ({}) reached for review",
+            max_retries
+        )));
+    }
+
+    // Start a new review
+    start_review(Extension(task_attempt), State(deployment)).await
+}
+
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let task_attempt_id_router = Router::new()
         .route("/", get(get_task_attempt))
         .route("/follow-up", post(follow_up))
         .route("/run-agent-setup", post(run_agent_setup))
         .route("/gh-cli-setup", post(gh_cli_setup_handler))
+        .route("/review/start", post(start_review))
+        .route("/review/stop", post(stop_review))
+        .route("/review/retry", post(retry_review))
         .route(
             "/draft",
             get(drafts::get_draft)

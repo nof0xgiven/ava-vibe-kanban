@@ -20,13 +20,17 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { JSONEditor } from '@/components/ui/json-editor';
 import { Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 
 import { ExecutorConfigForm } from '@/components/ExecutorConfigForm';
 import { useProfiles } from '@/hooks/useProfiles';
 import { useUserSystem } from '@/components/ConfigProvider';
 import { CreateConfigurationDialog } from '@/components/dialogs/settings/CreateConfigurationDialog';
 import { DeleteConfigurationDialog } from '@/components/dialogs/settings/DeleteConfigurationDialog';
-import type { BaseCodingAgent, ExecutorConfigs } from 'shared/types';
+import type { BaseCodingAgent, ExecutorConfigs, ReviewConfig } from 'shared/types';
+import { DEFAULT_REVIEW_CONFIG } from '@/types/review';
 
 type ExecutorsMap = Record<string, Record<string, Record<string, unknown>>>;
 
@@ -42,7 +46,10 @@ export function AgentSettings() {
     save: saveProfiles,
   } = useProfiles();
 
-  const { reloadSystem } = useUserSystem();
+const { config, updateAndSaveConfig, reloadSystem, profiles } = useUserSystem();
+
+  // Review config from central config (not localStorage)
+  const reviewConfig: ReviewConfig = config?.review ?? DEFAULT_REVIEW_CONFIG;
 
   // Local editor state (draft that may differ from server)
   const [localProfilesContent, setLocalProfilesContent] = useState('');
@@ -347,6 +354,17 @@ export function AgentSettings() {
     }
   };
 
+  const handleReviewConfigChange = async (updates: Partial<ReviewConfig>) => {
+    if (!config) return;
+    const updatedReview = { ...reviewConfig, ...updates };
+    try {
+      await updateAndSaveConfig({ ...config, review: updatedReview });
+    } catch (err) {
+      console.error('Failed to save review config:', err);
+      setSaveError(t('settings.agents.errors.saveConfigFailed'));
+    }
+  };
+
   if (profilesLoading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -381,6 +399,133 @@ export function AgentSettings() {
           <AlertDescription>{saveError}</AlertDescription>
         </Alert>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('settings.agents.review.title', { defaultValue: 'Review Settings' })}</CardTitle>
+          <CardDescription>
+            {t('settings.agents.review.description', { defaultValue: 'Configure automatic code review when tasks move to In Review status.' })}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Auto-review toggle */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="auto-review">
+                {t('settings.agents.review.autoReviewLabel', { defaultValue: 'Enable Auto-Review' })}
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                {t('settings.agents.review.autoReviewDescription', { defaultValue: 'Automatically start review when task moves to In Review' })}
+              </p>
+            </div>
+            <Switch
+              id="auto-review"
+              checked={reviewConfig.auto_review_enabled}
+              onCheckedChange={(checked) => handleReviewConfigChange({ auto_review_enabled: checked })}
+            />
+          </div>
+
+          {/* Review profile selector */}
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="use-same-agent"
+                checked={reviewConfig.review_profile === null}
+                onCheckedChange={(checked) => {
+                  if (checked) {
+                    handleReviewConfigChange({ review_profile: null });
+                  } else if (profiles?.executors) {
+                    // Set to first available profile
+                    const firstExecutor = Object.keys(profiles.executors)[0] as BaseCodingAgent;
+                    if (firstExecutor) {
+                      handleReviewConfigChange({
+                        review_profile: { executor: firstExecutor, variant: null }
+                      });
+                    }
+                  }
+                }}
+              />
+              <Label htmlFor="use-same-agent">
+                {t('settings.agents.review.useSameAgentLabel', { defaultValue: 'Use same agent as coding tasks' })}
+              </Label>
+            </div>
+            {reviewConfig.review_profile !== null && profiles?.executors && (
+              <Select
+                value={reviewConfig.review_profile?.executor ?? ''}
+                onValueChange={(value) => {
+                  handleReviewConfigChange({
+                    review_profile: { executor: value as BaseCodingAgent, variant: null }
+                  });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t('settings.agents.review.selectAgentPlaceholder', { defaultValue: 'Select review agent' })} />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.keys(profiles.executors).map((executor) => (
+                    <SelectItem key={executor} value={executor}>
+                      {executor}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          {/* Include in follow-up toggle */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="include-followup">
+                {t('settings.agents.review.includeFollowUpLabel', { defaultValue: 'Include in Follow-up' })}
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                {t('settings.agents.review.includeFollowUpDescription', { defaultValue: 'Include review feedback in follow-up prompts by default' })}
+              </p>
+            </div>
+            <Switch
+              id="include-followup"
+              checked={reviewConfig.include_in_follow_up}
+              onCheckedChange={(checked) => handleReviewConfigChange({ include_in_follow_up: checked })}
+            />
+          </div>
+
+          {/* Max retries */}
+          <div className="space-y-2">
+            <Label htmlFor="max-retries">
+              {t('settings.agents.review.maxRetriesLabel', { defaultValue: 'Maximum Retries' })}
+            </Label>
+            <Input
+              id="max-retries"
+              type="number"
+              min={0}
+              max={5}
+              value={reviewConfig.max_retries}
+              onChange={(e) => handleReviewConfigChange({ max_retries: parseInt(e.target.value, 10) || 0 })}
+              className="w-24"
+            />
+            <p className="text-sm text-muted-foreground">
+              {t('settings.agents.review.maxRetriesDescription', { defaultValue: 'Number of automatic retry attempts if review fails (0-5)' })}
+            </p>
+          </div>
+
+          {/* Custom prompt template */}
+          <div className="space-y-2">
+            <Label htmlFor="prompt-template">
+              {t('settings.agents.review.promptLabel', { defaultValue: 'Custom Prompt Template (Optional)' })}
+            </Label>
+            <Textarea
+              id="prompt-template"
+              placeholder={t('settings.agents.review.promptPlaceholder', { defaultValue: 'Enter custom instructions for the review agent...' })}
+              value={reviewConfig.prompt_template || ''}
+              onChange={(e) => handleReviewConfigChange({ prompt_template: e.target.value || null })}
+              rows={4}
+            />
+            <p className="text-sm text-muted-foreground">
+              {t('settings.agents.review.promptDescription', { defaultValue: 'Custom instructions appended to the review prompt. Leave empty for default behavior.' })}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

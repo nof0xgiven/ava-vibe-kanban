@@ -22,6 +22,7 @@ use db::{
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType,
+        coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
     },
@@ -49,6 +50,45 @@ use crate::services::{
     worktree_manager::WorktreeError,
 };
 pub type ContainerRef = String;
+
+/// Build the review prompt from task context and optional custom template
+pub fn build_review_prompt(task: &Task, custom_template: Option<&str>) -> String {
+    let mut prompt = String::new();
+
+    // Add standard review instructions
+    prompt.push_str("## Code Review Request\n");
+    prompt.push_str("You are a senior code reviewer ensuring high standards of code quality and security.\n\n");
+    prompt.push_str("Please review the code changes made in this task attempt.\n\n");
+    prompt.push_str("Review checklist:\n");
+    prompt.push_str("- Code is simple and readable\n");
+    prompt.push_str("- Functions and variables are well-named\n");
+    prompt.push_str("- No duplicated code\n");
+    prompt.push_str("- Proper error handling\n");
+    prompt.push_str("- No exposed secrets or API keys\n");
+    prompt.push_str("- Input validation implemented\n");
+    prompt.push_str("- Good test coverage\n");
+    prompt.push_str("- Performance considerations addressed\n\n");
+    prompt.push_str("Provide feedback organized by priority:\n");
+    prompt.push_str("- Critical issues (fail: must fix)\n");
+    prompt.push_str("- Warnings (pass: should fix)\n");
+    prompt.push_str("- Suggestions (pass: consider improving)\n\n");
+    prompt.push_str("Include specific examples of how to fix issues.\n\n");
+
+    // Add task context
+    prompt.push_str(&format!("### Task: {}\n\n", task.title));
+    if let Some(ref desc) = task.description {
+        prompt.push_str(&format!("### Description:\n{}\n\n", desc));
+    }
+
+    // Add custom template if provided
+    if let Some(template) = custom_template {
+        prompt.push_str("### Additional Review Instructions:\n");
+        prompt.push_str(template);
+        prompt.push_str("\n");
+    }
+
+    prompt
+}
 
 #[derive(Debug, Error)]
 pub enum ContainerError {
@@ -126,11 +166,22 @@ pub trait ContainerService {
     /// - Never when the run reason is DevServer
     /// - The next action is None (no follow-up actions)
     fn should_finalize(&self, ctx: &ExecutionContext) -> bool {
+        // Review processes always finalize - they don't have next actions
+        if ctx.execution_process.run_reason == ExecutionProcessRunReason::Review {
+            return true;
+        }
         if matches!(
             ctx.execution_process.run_reason,
             ExecutionProcessRunReason::DevServer
         ) {
             return false;
+        }
+        // Setup and cleanup scripts trigger coding agent via next_action.
+        if matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::SetupScript | ExecutionProcessRunReason::CleanupScript
+        ) {
+            return true;
         }
         // Always finalize failed or killed executions, regardless of next action
         if matches!(
@@ -148,6 +199,7 @@ pub trait ContainerService {
     }
 
     /// Finalize task execution by updating status to InReview and sending notifications
+    /// Also triggers auto-review if enabled and conditions are met
     async fn finalize_task(
         &self,
         config: &Arc<RwLock<Config>>,
@@ -172,6 +224,80 @@ pub trait ContainerService {
         }
         let notify_cfg = config.read().await.notifications.clone();
         NotificationService::notify_execution_halted(notify_cfg, ctx).await;
+
+        // Check if auto-review should be triggered
+        // Only auto-review after successful CodingAgent completion (not Review, SetupScript, etc.)
+        let should_auto_review = {
+            let cfg = config.read().await;
+            cfg.review.auto_review_enabled
+                && ctx.execution_process.run_reason == ExecutionProcessRunReason::CodingAgent
+                && ctx.execution_process.status == ExecutionProcessStatus::Completed
+        };
+
+        if should_auto_review {
+            if let Err(e) = self.start_auto_review(config, ctx).await {
+                tracing::error!("Failed to start auto-review for task {}: {}", ctx.task.id, e);
+            }
+        }
+    }
+
+    /// Start an automatic review execution for a completed task
+    async fn start_auto_review(
+        &self,
+        config: &Arc<RwLock<Config>>,
+        ctx: &ExecutionContext,
+    ) -> Result<ExecutionProcess, ContainerError> {
+        let cfg = config.read().await;
+        let review_config = &cfg.review;
+
+        // Determine executor profile for review
+        let review_profile_id = if let Some(ref profile) = review_config.review_profile {
+            profile.clone()
+        } else {
+            // Use the same profile as the coding agent
+            ExecutionProcess::latest_executor_profile_for_attempt(
+                &self.db().pool,
+                ctx.task_attempt.id,
+            )
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("Failed to get executor profile: {}", e)))?
+        };
+
+        // Get the session ID from the previous coding agent execution
+        let session_id = ExecutionProcess::find_latest_session_id_by_task_attempt(
+            &self.db().pool,
+            ctx.task_attempt.id,
+        )
+        .await
+        .map_err(|e| ContainerError::Other(anyhow!("Failed to get session ID: {}", e)))?
+        .ok_or_else(|| ContainerError::Other(anyhow!("No previous coding agent session found for auto-review")))?;
+
+        // Build the review prompt
+        let prompt = build_review_prompt(&ctx.task, review_config.prompt_template.as_deref());
+
+        // Create the executor action for review
+        let executor_action = ExecutorAction {
+            typ: ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt,
+                session_id,
+                executor_profile_id: review_profile_id,
+            }),
+            next_action: None,
+        };
+
+        tracing::info!(
+            "Starting auto-review for task {} (attempt {})",
+            ctx.task.id,
+            ctx.task_attempt.id
+        );
+
+        // Start the review execution
+        self.start_execution(
+            &ctx.task_attempt,
+            &executor_action,
+            &ExecutionProcessRunReason::Review,
+        )
+        .await
     }
 
     /// Cleanup executions marked as running in the db, call at startup

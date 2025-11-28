@@ -655,6 +655,36 @@ export const attemptsApi = {
     );
     return handleApiResponse<ExecutionProcess, GhCliSetupError>(response);
   },
+
+  startReview: async (attemptId: string): Promise<ExecutionProcess> => {
+    const response = await makeRequest(
+      `/api/task-attempts/${attemptId}/review/start`,
+      {
+        method: 'POST',
+      }
+    );
+    return handleApiResponse<ExecutionProcess>(response);
+  },
+
+  stopReview: async (attemptId: string): Promise<void> => {
+    const response = await makeRequest(
+      `/api/task-attempts/${attemptId}/review/stop`,
+      {
+        method: 'POST',
+      }
+    );
+    return handleApiResponse<void>(response);
+  },
+
+  retryReview: async (attemptId: string): Promise<ExecutionProcess> => {
+    const response = await makeRequest(
+      `/api/task-attempts/${attemptId}/review/retry`,
+      {
+        method: 'POST',
+      }
+    );
+    return handleApiResponse<ExecutionProcess>(response);
+  },
 };
 
 // Extra helpers

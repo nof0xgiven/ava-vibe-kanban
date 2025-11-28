@@ -103,6 +103,7 @@ export const AttemptHeaderActions = ({
                 {t('attemptHeaderActions.diffs')}
               </TooltipContent>
             </Tooltip>
+
           </ToggleGroup>
         </TooltipProvider>
       )}
