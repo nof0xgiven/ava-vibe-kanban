@@ -1670,7 +1670,29 @@ pub async fn retry_review(
     Extension(task_attempt): Extension<TaskAttempt>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
-    // Simply start a new review - it will be counted as a retry
+    use db::models::execution_process::ExecutionProcessRunReason;
+
+    // Get review config to check max retries
+    let config = deployment.config().read().await;
+    let max_retries = config.review.max_retries;
+    drop(config);
+
+    // Count existing review processes for this attempt
+    let processes = ExecutionProcess::find_by_task_attempt_id(&deployment.db().pool, task_attempt.id, false).await?;
+    let review_count = processes
+        .iter()
+        .filter(|p| p.run_reason == ExecutionProcessRunReason::Review)
+        .count();
+
+    // Check if we've exceeded max retries (first attempt + retries)
+    if review_count > max_retries as usize {
+        return Err(ApiError::BadRequest(format!(
+            "Maximum retry limit ({}) reached for review",
+            max_retries
+        )));
+    }
+
+    // Start a new review
     start_review(Extension(task_attempt), State(deployment)).await
 }
 
